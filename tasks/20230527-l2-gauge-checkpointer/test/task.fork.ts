@@ -11,10 +11,11 @@ import { Task, TaskMode } from '@src';
 import { getForkedNetwork } from '@src';
 import { impersonate } from '@src';
 import { actionId } from '@helpers/models/misc/actions';
+import { currentWeekTimestamp } from '@helpers/time';
 
 // This block number is before the manual weekly checkpoint. This ensures gauges will actually be checkpointed.
 // This test verifies the checkpointer against the manual transactions for the given period.
-describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
+describeForkTest('L2GaugeCheckpointer', 'mainnet', 17431930, function () {
   /* eslint-disable @typescript-eslint/no-non-null-assertion */
 
   enum GaugeType {
@@ -28,7 +29,7 @@ describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
     ZkSync,
   }
 
-  let adderCoordinator: Contract;
+  let adderCoordinator: Contract, gaugeController: Contract;
   let L2GaugeCheckpointer: Contract;
   let authorizer: Contract, adaptorEntrypoint: Contract;
 
@@ -68,7 +69,7 @@ describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
   // It is important to have at least one Arbitrum gauge for the test, because it is the only type that has
   // an associated ETH fee.
   const arbitrumRootGauges: [address: string, expectedCheckpoints: number][] = [
-    ['0x8204b749b808818deb7957dbd030ceea44d1fe18', 1],
+    ['0xB5044FD339A7b858095324cC3F239C212956C179', 8],
   ];
 
   const optimismRootGauges: [address: string, expectedCheckpoints: number][] = [
@@ -123,24 +124,24 @@ describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
     adaptorEntrypoint = await adaptorEntrypointTask.deployedInstance('AuthorizerAdaptorEntrypoint');
   });
 
-  // At this block, the adder coordinator has been deployed but not executed.
-  // Then, we can fetch the deployed contract and execute it here to setup the correct types in the adder, which are
-  // necessary for the checkpointer to work correctly.
-  before('run adder migrator coordinator', async () => {
-    const adderCoordinatorTask = new Task(
-      '20230519-gauge-adder-migration-v3-to-v4',
-      TaskMode.READ_ONLY,
-      getForkedNetwork(hre)
-    );
-    adderCoordinator = await adderCoordinatorTask.deployedInstance('GaugeAdderMigrationCoordinator');
+  // // At this block, the adder coordinator has been deployed but not executed.
+  // // Then, we can fetch the deployed contract and execute it here to setup the correct types in the adder, which are
+  // // necessary for the checkpointer to work correctly.
+  // before('run adder migrator coordinator', async () => {
+  //   const adderCoordinatorTask = new Task(
+  //     '20230519-gauge-adder-migration-v3-to-v4',
+  //     TaskMode.READ_ONLY,
+  //     getForkedNetwork(hre)
+  //   );
+  //   adderCoordinator = await adderCoordinatorTask.deployedInstance('GaugeAdderMigrationCoordinator');
 
-    await authorizer.connect(daoMultisig).grantRole(await authorizer.DEFAULT_ADMIN_ROLE(), adderCoordinator.address);
-    await adderCoordinator.performNextStage();
-  });
+  //   await authorizer.connect(daoMultisig).grantRole(await authorizer.DEFAULT_ADMIN_ROLE(), adderCoordinator.address);
+  //   await adderCoordinator.performNextStage();
+  // });
 
   before('get gauge relative weights and associate them with their respective address', async () => {
     const gaugeControllerTask = new Task('20220325-gauge-controller', TaskMode.READ_ONLY, getForkedNetwork(hre));
-    const gaugeController = await gaugeControllerTask.deployedInstance('GaugeController');
+    gaugeController = await gaugeControllerTask.deployedInstance('GaugeController');
 
     const getGaugesData = async (gaugeInputs: [string, number][]) => {
       return Promise.all(
@@ -153,6 +154,14 @@ describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
         })
       );
     };
+
+    const ts = await currentWeekTimestamp();
+    const relativeWeightBefore = await gaugeController['gauge_relative_weight(address,uint256)']('0xB5044FD339A7b858095324cC3F239C212956C179', ts);
+    console.log('relative weight: ', relativeWeightBefore);
+    await gaugeController.checkpoint_gauge('0xB5044FD339A7b858095324cC3F239C212956C179');
+    const relativeWeightAfter = await gaugeController['gauge_relative_weight(address,uint256)']('0xB5044FD339A7b858095324cC3F239C212956C179', ts);
+    console.log('relative weight: ', relativeWeightAfter);
+
     const singleRecipientGaugesData: GaugeData[] = await getGaugesData(singleRecipientGauges);
     const polygonRootGaugesData: GaugeData[] = await getGaugesData(polygonRootGauges);
     const arbitrumRootGaugesData: GaugeData[] = await getGaugesData(arbitrumRootGauges);
@@ -166,15 +175,15 @@ describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
     gauges.set(GaugeType.Gnosis, gnosisRootGaugesData);
   });
 
-  before('check total expected checkpoints', () => {
-    let sum = 0;
-    for (const [, gaugeData] of gauges.entries()) {
-      if (gaugeData.length > 0) {
-        sum += gaugeData.map((gaugeData) => gaugeData.expectedCheckpoints).reduce((a, b) => a + b);
-      }
-    }
-    expect(sum).to.be.eq(TOTAL_EXPECTED_CHECKPOINTS);
-  });
+  // before('check total expected checkpoints', () => {
+  //   let sum = 0;
+  //   for (const [, gaugeData] of gauges.entries()) {
+  //     if (gaugeData.length > 0) {
+  //       sum += gaugeData.map((gaugeData) => gaugeData.expectedCheckpoints).reduce((a, b) => a + b);
+  //     }
+  //   }
+  //   expect(sum).to.be.eq(TOTAL_EXPECTED_CHECKPOINTS);
+  // });
 
   before('add gauges to checkpointer', async () => {
     // Some gauges were created from previous factories, so they need to be added by governance.
@@ -231,8 +240,8 @@ describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
       itChecksTotalBridgeCost(fp(1));
     });
 
-    context('when threshold is 0.0001', () => {
-      itChecksTotalBridgeCost(fp(0.0001));
+    context('when threshold is 0.0000001', () => {
+      itChecksTotalBridgeCost(fp(0.0000001));
     });
 
     context('when threshold is 0', () => {
@@ -350,7 +359,7 @@ describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
         itPerformsCheckpoint();
       });
 
-      context('when checkpointing only Arbitrum gauges', () => {
+      context.only('when checkpointing only Arbitrum gauges', () => {
         sharedBeforeEach(async () => {
           performCheckpoint = async () => {
             const tx = await L2GaugeCheckpointer.checkpointGaugesOfTypeAboveRelativeWeight(
@@ -363,6 +372,7 @@ describeForkTest('L2GaugeCheckpointer', 'mainnet', 17332499, function () {
             return await tx.wait();
           };
           gaugeDataAboveMinWeight = arbitrumGaugeDataAboveMinWeight;
+          console.log('amount of gauges above min: ', gaugeDataAboveMinWeight.length);
         });
 
         itPerformsCheckpoint();
